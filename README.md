@@ -19,3 +19,4 @@ Instructions:
    - Each switch can be upgraded later over WiFi but clicking firmware upgrade button with no need to connect to a computer.  It picks up the lastest firmware from my server.  So really simple for upgrades no PC or flashing required.
    - Restart switch to apply changes,  OLED screen will display if its been successful in connecting and Wifi on initial screen.
    
+[note I'll do proper build instructions in a bit]
