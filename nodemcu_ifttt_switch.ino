@@ -3,8 +3,8 @@
  * IFTTT INTEGRATED IOT SWITCH WORKS WITH NODEMCU ESP8266 USING IFTTT WEBHOOKS
  * 
  * Developer: Nik Valiris
- * Date:      17/10/2017
- * Version:   0.1
+ * Date:      11/11/2017
+ * Version:   1.4.1
  * 
  * Thanks to :  http://arduino-er.blogspot.co.uk/2016/04/nodemcu-esp8266-to-display-on-128x64.html
  *              Virang for his IFTTT examples http://virang-a.blogspot.co.uk/2017/06/ifttt-button-with-nodemcu.html
@@ -13,9 +13,15 @@
  *              1. Webhook is in the clear, better to encrypt
  *              2. Add support for a light sensor
  *              3. Tidy up the code and some more functions
+ *              4. More switch pins
  * 
  * Updates:
- *              0.1 First version that works
+ *              0.1 18/10/2017 First version that works
+ *              1.1 21/10/2017 1.1 Patched first release, fixed bug with Wifi connected status
+ *              1.2 23/10/2017 Fixed Wifi connection retries, Added firmware update via server feature, 
+ *              1.3 23/10/2017  Added more switches
+ *              1.4 31/10/2017  Fixed issue with lossing WiFi settings, now saves settings to storage
+ *              1.4.1 11/11/2017 Changed switch 6 pin number
 */
 
 #include <WiFiClient.h>
@@ -23,12 +29,14 @@
 #include <WiFiUdp.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <ESP8266httpUpdate.h>
 #include <ESP8266HTTPClient.h>
 #include "DHT.h"
 #include "FS.h"
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
+#define VERSION 1.4
 
 #define OLED_RESET LED_BUILTIN //4
 Adafruit_SSD1306 display(OLED_RESET);
@@ -37,6 +45,8 @@ Adafruit_SSD1306 display(OLED_RESET);
 #define XPOS 0
 #define YPOS 1
 #define DELTAY 2
+
+
 
 
 #define LOGO16_GLCD_HEIGHT 16 
@@ -66,7 +76,8 @@ const char* ssid = "";
 const char* password = "";
 const char* host = "maker.ifttt.com";
 const char* apiKey = "";
-String qapiKey, qswitch1, qswitch2, qswitch3, qswitch4, qdevname;
+String qapiKey, qswitch1, qswitch2, qswitch3, qswitch4, qswitch5, qswitch6, qdevname;
+int wc = 0; //wifi unconnected counter
 
 //Pin setup
 
@@ -74,19 +85,24 @@ int pin = 15; //D8
 int pin2 = 14; //D5
 int pin3 = 13; //D7
 int pin4 = 12; //D6
+int pin5 = 0; //D3
+int pin6 = 2; //D4
 
-int pin5 = 0; //D3 - not enabled yet
-int pin6 = 2; //D4 - not enabled yet
 int pin7 = 16; //D0 - not enabled yet
+
 
 volatile int flag = false;
 volatile int flag2 = false;
 volatile int flag3 = false;
 volatile int flag4 = false;
+volatile int flag5 = false;
+volatile int flag6 = false;
 const char* PIN_state = "not pressed";
 const char* PIN_state2 = "not pressed";
 const char* PIN_state3 = "not pressed";
 const char* PIN_state4 = "not pressed";
+const char* PIN_state5 = "not pressed";
+const char* PIN_state6 = "not pressed";
 
 void PINStatus() {
             PIN_state = "switch1 pressed";  
@@ -104,12 +120,21 @@ void PINStatus4() {
             PIN_state4 = "switch4 pressed";  
              flag4 = true;
 }
-
+void PINStatus5() {
+            PIN_state5 = "switch5 pressed";  
+             flag5 = true;
+}
+void PINStatus6() {
+            PIN_state6 = "switch6 pressed";  
+             flag6 = true;
+}
 //AP definitions for Access Point onboard
 //const char *ssidapp = "";
 //const char *passwordapp = "";
 String ssidap = "";
 String passwordap = "";
+String qsid = "";
+String qpass = "";
 
 //Configuration for onboard webserver
 ESP8266WebServer serverap(80);
@@ -126,7 +151,9 @@ void handleRoot() {
   String macStr = macToStr(mac);
   content = "<!DOCTYPE HTML>\n<html>";
   content += "<style>h1 {color: red; padding: 10px; text-decoration: underline;} ul {list-style-type: upper-roman; margin-left: 50px;} p {color: darkblue}</style>";
-  content += "<h1>IFTTT Switch</h1>Version 0.1 <br><br><h2>Configuration:</h2><br><h3>Local IP and MacAddress: </h3>";
+  content += "<h1>IFTTT Switch</h1>Version ";
+  content += VERSION;
+  content += "<br><br><h2>Configuration:</h2><br><h3>Local IP and MacAddress: </h3>";
   content += ipStr;
   content += " (";
   content += macStr;
@@ -137,8 +164,10 @@ void handleRoot() {
   content += ipwifiStr;
   content += "<p><br><h3>WiFi Router:</h3>Current Wifi SSID: ";
   content += WiFi.SSID();
+  //content += "  Stored SSID: ";
+  //content += qsid; 
   content += "  Status: ";
-  if (testWifi()) {
+  if (WiFi.status() == WL_CONNECTED) {
     content += "<b><font color=\"green\"> CONNECTED</font></b><br>";
   } else {
      content += "<b><font color=\"red\"> DISCONNECTED</font></b><br>";     
@@ -171,10 +200,15 @@ void handleRoot() {
   content += qswitch3;
   content += ", ";
   content += qswitch4;
-  content += "<p>Device name: " + qdevname +"<p>";    
-  content += "<form method='get' action='setswitches'><label>Event Names 1-4: </label><input name='switch1' length=3><input name='switch2' length=3><input name='switch3' length=3><input name='switch4' length=3><label>Device name: </label><input name='devname' length=3><input type='submit' value='Change Names'></form>";
-  content += "<p> <a href=\"http://" + WiFi.softAPIP().toString()+"\">Refresh Configuration</a> ";
+  content += ", ";
+  content += qswitch5;
+  content += ", ";
+  content += qswitch6;
+  content += "<p>Room name: " + qdevname +"<p>";    
+  content += "<form method='get' action='setswitches'><label>Event Names 1-4: </label><input name='switch1' length=3><input name='switch2' length=3><input name='switch3' length=3><input name='switch4' length=3><input name='switch5' length=3><input name='switch6' length=3><label>Room name: </label><input name='devname' length=3><input type='submit' value='Change Names'></form>";
   
+  content += "<p> <a href=\"http://" + WiFi.softAPIP().toString()+"\">Refresh Configuration</a> ";
+  content += "<p>  <form method='get' action='update'><input type='submit' value='Update Firmware'></form>  ";
   content += "</html>";
 //   serverap.send(200, "text/html", "<br>Version 0.1<p>");
   serverap.send(200, "text/html", content);
@@ -189,6 +223,31 @@ void handleHelp(){
   serverap.send(200, "text/html", htmlBody_help);
 }
 
+
+
+void handleUpdate(){
+  t_httpUpdate_return ret = ESPhttpUpdate.update("xctool.org", 80, "/esp/update/ifttt_switch.bin");
+switch(ret) {
+    case HTTP_UPDATE_FAILED:
+        Serial.println("[update] Update failed.");
+        content = "<!DOCTYPE HTML><html>";
+        content += "[update] Update failed.</html>";
+        serverap.send(200, "text/html", content);
+        break;
+    case HTTP_UPDATE_NO_UPDATES:
+        content = "<!DOCTYPE HTML><html>";
+        content += "[update] Update no Update.</html>";
+        serverap.send(200, "text/html", content);
+        Serial.println("[update] Update no Update.");
+        break;
+    case HTTP_UPDATE_OK:
+        content = "<!DOCTYPE HTML><html>";
+        content += "[update] Update ok.</html>";
+        serverap.send(200, "text/html", content);
+        Serial.println("[update] Update ok."); // may not called we reboot the ESP
+        break;
+}
+}
 
 void handleSetAp(){
   // Setup Access Point
@@ -241,6 +300,8 @@ void handleSetSwitches(){
    qswitch2 = serverap.arg("switch2");
    qswitch3 = serverap.arg("switch3");
    qswitch4 = serverap.arg("switch4");
+   qswitch5 = serverap.arg("switch5");
+   qswitch6 = serverap.arg("switch6");
    qdevname = serverap.arg("devname");
    
       
@@ -284,7 +345,7 @@ void handleSetHub(){
 if (save_setting()) {
     content = "<!DOCTYPE HTML>\n<html>";
     content += "Changed Smartthings Hub ";
-    content += "<p><a href=\"http://192.168.4.1/\">Click here to return</a> </html>";
+    content += "<p><a href=\"http://192.168.4.1/\">Click here to return</a>";
     serverap.send(httpstatus, "text/html", content);
 }
 
@@ -296,8 +357,8 @@ void handleSetWifi(){
   // Connect to WiFi network
   
   int httpstatus = 200;
-  String qsid = serverap.arg("ssidnew");
-  String qpass = serverap.arg("passwordnew");
+  qsid = serverap.arg("ssidnew");
+  qpass = serverap.arg("passwordnew");
 
  // content = "<!DOCTYPE HTML>Trying to connect....\n<html>";
 //        content += "</html>";
@@ -315,15 +376,16 @@ void handleSetWifi(){
       // Deal with (potentially) plus-encoded password
       qpass[i] = (qpass[i] == '+' ? ' ' : qpass[i]);
     }
-    
+    //WiFi.softAP(qsid.c_str(), qpass.c_str());
+
+    WiFi.disconnect();
     WiFi.mode(WIFI_AP_STA);
     WiFi.begin(qsid.c_str(), qpass.c_str());
-      serverap.begin();
-    
+    delay(8000);
+
     if (testWifi()) {
       Serial.println("\nGreat Success!");
-      //  delay(3000);
-     // abort();
+
     }
     
     if (testWifi()) {
@@ -332,14 +394,14 @@ void handleSetWifi(){
       content += qsid.c_str();
       content += "<br>with password: <br> ";
       content += qpass.c_str();
-      content += "<p><a href=\"http://192.168.4.1/\">Click here to return</a> </html>";
+      content += "<p><a href=\"http://192.168.4.1/\">Click here to return</a>";
     } else {
       content = "<!DOCTYPE HTML>\n<html>";
-      content += "Failed to connect to: <p>";
+      content += "Restart switch to check if: <p>";
       content += qsid.c_str();
       content += "<br>with password: <br> ";
       content += qpass.c_str();
-      content += ", try again.  <p> <a href=\"http://192.168.4.1/\">Click here to return</a> /html>";
+      content += ", will work.  <p> <a href=\"http://192.168.4.1/\">Click here to return</a>";
     }
   } else {
       content = "<!DOCTYPE HTML><html>";
@@ -350,7 +412,9 @@ void handleSetWifi(){
       Serial.println("Sending 404");
       httpstatus = 404;
   }
-  serverap.send(httpstatus, "text/html", content);
+if (save_setting()) {
+    serverap.send(httpstatus, "text/html", content);
+}
 }
 
 
@@ -388,10 +452,14 @@ void setup() {
     pinMode(pin2, OUTPUT); 
     pinMode(pin3, OUTPUT); 
     pinMode(pin4, OUTPUT); 
+    pinMode(pin5, OUTPUT); 
+    pinMode(pin6, OUTPUT); 
     attachInterrupt(digitalPinToInterrupt(pin), PINStatus, FALLING);
     attachInterrupt(digitalPinToInterrupt(pin2), PINStatus2, FALLING);
     attachInterrupt(digitalPinToInterrupt(pin3), PINStatus3, FALLING);
     attachInterrupt(digitalPinToInterrupt(pin4), PINStatus4, FALLING);
+    attachInterrupt(digitalPinToInterrupt(pin5), PINStatus5, FALLING);
+    attachInterrupt(digitalPinToInterrupt(pin6), PINStatus6, FALLING);
 
   Serial.println("\nVStarting SPIFFS");
   SPIFFS.begin();
@@ -429,22 +497,27 @@ void setup() {
     serverap.on("/setap", handleSetAp);
     serverap.on("/sethub", handleSetHub);
     serverap.on("/setapi", handleSetApi);     
-    serverap.on("/setswitches", handleSetSwitches);     
+    serverap.on("/setswitches", handleSetSwitches);
+    serverap.on("/update", handleUpdate);     
     serverap.begin();
     Serial.println("HTTP server beginned");
 
 
   // prepare GPIOs
 
-  pinMode(12, INPUT_PULLUP);
-  pinMode(14, INPUT_PULLUP);
-  pinMode(0, INPUT_PULLUP);
+  //pinMode(12, INPUT_PULLUP);
+  //pinMode(14, INPUT_PULLUP);
+  //pinMode(0, INPUT_PULLUP);
 
+  digitalWrite(2,1);
+  //WiFi.disconnect();
   WiFi.mode(WIFI_AP_STA);
   WiFi.begin();
 
   dht.begin();
   server.begin();
+
+ 
 
   rptCnt=reportInterval;
   Serial.println(WiFi.localIP());
@@ -470,11 +543,37 @@ void setup() {
   display.setTextSize(1);
   display.display();
   delay(2000);
+
+  //Check for Wifi connection and initial connect  **NEEDS REWORK INTO WIFI_CONNECT PROCEDURE**
+  display.print("Attempt Wifi connect");
+  display.display();
+  digitalWrite(2,1);
+  for (int i = 0; i < 25; i++)
+  {
+    if ( WiFi.status() != WL_CONNECTED ) {
+    delay(250);
+    digitalWrite(2,0);
+    Serial.print(".");
+    display.print(".");
+    digitalWrite(2,1);
+
+    display.display();
+  }
+  }
+  digitalWrite(2,0);
+  display.clearDisplay();
+  display.setCursor(0,0);
+  display.display();
   if (testWifi()) {
          display.println("Connected to Wifi");
          display.println(WiFi.SSID());
          display.display();
+  } else {
+             display.println("Not Connected to Wifi");
+             display.println("Setup the Wifi first");
   }
+
+  //Display access point and other details on OLED display
   if (ssidap != NULL) {
         display.println("SSID: "+ ssidap);
     } else {
@@ -482,26 +581,53 @@ void setup() {
     }
   display.println("APIP: "+ WiFi.softAPIP().toString());
   display.println("WIFI: "+ WiFi.localIP().toString());
+  display.println("VERSION: " + String(VERSION));
 
   delay(2000);
   display.display();
 }
 
+void WIFI_Connect()
+{
+  read_setting();
+  digitalWrite(2,1);
+  WiFi.disconnect();
+  Serial.println("Booting Sketch...");
+  WiFi.mode(WIFI_AP_STA);
+  //WiFi.softAP(ssidap.c_str(), passwordap.c_str());
+  WiFi.begin(qsid.c_str(), qpass.c_str());
+    // Wait for connection
+  for (int i = 0; i < 25; i++)
+  {
+    if ( WiFi.status() != WL_CONNECTED ) {
+      delay ( 250 );
+      digitalWrite(2,0);
+      Serial.print ( "." );
+      delay ( 250 );
+      digitalWrite(2,1);
+    }
+  }
+  digitalWrite(2,0);
+}
+
 
 bool testWifi(void) {
   int c = 0;
-  Serial.println("\nWaiting for Wifi to connect...");
+  Serial.println("\nChecking Wifi..");
   while ( c < 20 ) {
     if (WiFi.status() == WL_CONNECTED) {
-      return true;
        Serial.println("\nConnected to Wifi...");
+       return true;
     }
     delay(500);
     Serial.print(WiFi.status());
     c++;
   }
   //Serial.println("\nConnect timed out, opening AP");
-  //return false;
+  if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("\nFailed to connect to Wifi...");
+      return false;
+      }
 }
 
 
@@ -528,6 +654,10 @@ bool save_setting() {
     f.println(ssidap);  
     f.println(passwordap);
     f.println(qdevname);
+    f.println(qswitch5);
+    f.println(qswitch6);
+    f.println(qsid.c_str());
+    f.println(qpass.c_str());
    f.close();
     Serial.println("Setting hub spiffs");
     Serial.println(qhubip1.toInt());
@@ -539,7 +669,11 @@ bool save_setting() {
     Serial.println(qswitch2);
     Serial.println(qswitch3);
     Serial.println(qswitch4);
+    Serial.println(qswitch5);
+    Serial.println(qswitch6);
     Serial.println(qdevname);
+    Serial.println(qsid.c_str());
+    Serial.println(qpass.c_str());
    return true;
   }
 }
@@ -567,6 +701,10 @@ bool read_setting() {
     ssidap=f.readStringUntil('\n');
     passwordap=f.readStringUntil('\n');
     qdevname=f.readStringUntil('\n');
+    qswitch5=f.readStringUntil('\n');
+    qswitch6=f.readStringUntil('\n');
+    qsid=f.readStringUntil('\n');
+    qpass=f.readStringUntil('\n');
     f.close();
     Serial.println("Setting hub spiffs write");
     Serial.println(qhubip1.toInt());
@@ -579,7 +717,13 @@ bool read_setting() {
     Serial.println(qswitch3);
     Serial.println(qswitch4);
     Serial.println(qdevname);
+    Serial.println(qswitch5);
+    Serial.println(qswitch6);
+    Serial.println(qsid);
+    Serial.println(qpass);
 
+    qsid.trim();
+    qpass.trim();
     return true;
  }
 }
@@ -649,6 +793,21 @@ void loop() {
 
   serverap.handleClient();
 
+//Check Wifi and if its gone down then recheck for a bit then reboot
+    if (WiFi.status() != WL_CONNECTED)
+    {
+            wc = wc + 1;
+            //Serial.println(wc);
+    }
+    if ((WiFi.status() != WL_CONNECTED) && (qsid != NULL) && (wc == 3000)) //checkup every 5 mins, if WiFi down try reboot
+    {
+      digitalWrite(2,1);
+      WIFI_Connect();
+      wc = 0;
+    } else {
+      digitalWrite(2,0);
+    }
+
 //ifffcode here
 
           if(flag){
@@ -677,7 +836,7 @@ void loop() {
                        "value1=" + PIN_state + "\r\n");
 
           if (qswitch1 != NULL){
-            display.println(qswitch1+" press");
+            display.println(qswitch1);
             display.display();
             delay(5000); //delay for screen before refreshing
             display.clearDisplay();
@@ -689,7 +848,7 @@ void loop() {
             } else {
               display.println(qdevname);              
             }
-            display.setTextSize(1);
+            display.setTextSize(2);
             display.display();
           } else {
             display.println("switch name not set");
@@ -721,7 +880,7 @@ void loop() {
                        "Content-Length: 13\r\n\r\n" +
                        "value1=" + PIN_state2 + "\r\n");
           if (qswitch2 != NULL){ 
-            display.println(qswitch2+" press");
+            display.println(qswitch2);
             display.display();
             delay(5000); //delay for screen before refreshing
             display.clearDisplay();
@@ -733,7 +892,7 @@ void loop() {
             } else {
               display.println(qdevname);              
             }
-            display.setTextSize(1);
+            display.setTextSize(2);
             display.display();  
           } else {
             display.println("switch name not set");
@@ -766,7 +925,7 @@ void loop() {
                        "value1=" + PIN_state3 + "\r\n");
 
            if (qswitch3 != NULL){
-            display.println(qswitch3+" press");
+            display.println(qswitch3);
             display.display();
             delay(5000); //delay for screen before refreshing
             display.clearDisplay();
@@ -778,7 +937,7 @@ void loop() {
             } else {
               display.println(qdevname);              
             }
-            display.setTextSize(1);
+            display.setTextSize(2);
             display.display();  
           } else {
             display.println("switch name not set");
@@ -811,7 +970,7 @@ void loop() {
                        "value1=" + PIN_state4 + "\r\n");
 
           if (qswitch4 != NULL){
-            display.println(qswitch4+" press");
+            display.println(qswitch4);
             display.display();
             delay(5000); //delay for screen before refreshing
             display.clearDisplay();
@@ -823,7 +982,7 @@ void loop() {
             } else {
               display.println(qdevname);              
             }
-            display.setTextSize(1);
+            display.setTextSize(2);
             display.display();  
           } else {
             display.println("switch name not set");
@@ -831,7 +990,98 @@ void loop() {
           }
                        
           flag4 = false;
-      }  
+      }
+      if(flag5){
+          Serial.print("connecting to ");
+          Serial.println(host);
+          
+          WiFiClient client;
+          const int httpPort = 80;
+          if (!client.connect(host, httpPort)) {
+            Serial.println("connection failed");
+            return;
+          }
+    
+          qapiKey.trim();
+          qswitch5.trim();
+          String url = "/trigger/"+qswitch5+"/with/key/"+qapiKey;
+          
+          Serial.print("Requesting URL: ");
+          Serial.println(url);
+          client.print(String("POST ") + url + " HTTP/1.1\r\n" +
+                       "Host: " + host + "\r\n" + 
+                       "Content-Type: application/x-www-form-urlencoded\r\n" + 
+                       "Content-Length: 13\r\n\r\n" +
+                       "value1=" + PIN_state5 + "\r\n");
+
+          if (qswitch5 != NULL){
+            display.println(qswitch5);
+            display.display();
+            delay(5000); //delay for screen before refreshing
+            display.clearDisplay();
+            display.setTextSize(2);
+            display.setTextColor(WHITE);
+            display.setCursor(0,0);
+            if (qdevname == NULL) {
+              display.println("IFTTT");
+            } else {
+              display.println(qdevname);              
+            }
+            display.setTextSize(2);
+            display.display();  
+          } else {
+            display.println("switch name not set");
+            display.display();  
+          }
+                       
+          flag5 = false;
+      }
+      if(flag6){
+          Serial.print("connecting to ");
+          Serial.println(host);
+          
+          WiFiClient client;
+          const int httpPort = 80;
+          if (!client.connect(host, httpPort)) {
+            Serial.println("connection failed");
+            return;
+          }
+    
+          qapiKey.trim();
+          qswitch6.trim();
+          String url = "/trigger/"+qswitch6+"/with/key/"+qapiKey;
+          
+          Serial.print("Requesting URL: ");
+          Serial.println(url);
+          client.print(String("POST ") + url + " HTTP/1.1\r\n" +
+                       "Host: " + host + "\r\n" + 
+                       "Content-Type: application/x-www-form-urlencoded\r\n" + 
+                       "Content-Length: 13\r\n\r\n" +
+                       "value1=" + PIN_state6 + "\r\n");
+
+          if (qswitch6 != NULL){
+            display.println(qswitch6);
+            display.display();
+            delay(5000); //delay for screen before refreshing
+            display.clearDisplay();
+            display.setTextSize(2);
+            display.setTextColor(WHITE);
+            display.setCursor(0,0);
+            if (qdevname == NULL) {
+              display.println("IFTTT");
+            } else {
+              display.println(qdevname);              
+            }
+            display.setTextSize(2);
+            display.display();  
+          } else {
+            display.println("switch name not set");
+            display.display();  
+          }
+                       
+          flag6 = false;
+      }
+
       delay(100);
 
 }
